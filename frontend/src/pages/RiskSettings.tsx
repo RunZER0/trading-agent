@@ -33,7 +33,7 @@ export default function RiskSettings() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    api.get('/risk/config').then(({ data }) => {
+    api.get<RiskConfig>('/risk/config').then(({ data }) => {
       setConfig({ ...defaultConfig, ...data });
     });
   }, []);
