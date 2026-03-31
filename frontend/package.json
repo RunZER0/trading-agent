@@ -9,15 +9,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.47.12",
+    "axios": "^1.7.9",
+    "clsx": "^2.1.1",
+    "lightweight-charts": "^5.1.0",
+    "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.1",
-    "axios": "^1.7.9",
     "recharts": "^2.15.0",
-    "lucide-react": "^0.468.0",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^2.6.0",
-    "@supabase/supabase-js": "^2.47.12"
+    "tailwind-merge": "^2.6.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.2",

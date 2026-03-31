@@ -7,6 +7,7 @@ import {
   ShieldAlert,
   BarChart3,
   FlaskConical,
+  Database,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Signals from './pages/Signals';
@@ -15,6 +16,7 @@ import Portfolio from './pages/Portfolio';
 import RiskSettings from './pages/RiskSettings';
 import MarketData from './pages/MarketData';
 import Backtest from './pages/Backtest';
+import DataManager from './pages/DataManager';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -24,6 +26,7 @@ const navItems = [
   { to: '/risk', icon: ShieldAlert, label: 'Risk' },
   { to: '/market', icon: BarChart3, label: 'Market' },
   { to: '/backtest', icon: FlaskConical, label: 'Backtest' },
+  { to: '/data', icon: Database, label: 'Data' },
 ];
 
 export default function App() {
@@ -72,6 +75,7 @@ export default function App() {
           <Route path="/risk" element={<RiskSettings />} />
           <Route path="/market" element={<MarketData />} />
           <Route path="/backtest" element={<Backtest />} />
+          <Route path="/data" element={<DataManager />} />
         </Routes>
       </main>
     </div>

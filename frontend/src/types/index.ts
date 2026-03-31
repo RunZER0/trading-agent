@@ -112,3 +112,59 @@ export interface OHLCVBar {
   close: number;
   volume: number;
 }
+
+export interface BacktestAgentRequest {
+  assets: string[];
+  timeframe: string;
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  position_size_pct: number;
+  stop_loss_pct: number;
+  take_profit_pct: number;
+  notes: string;
+}
+
+export interface StrategyResult {
+  strategy_name: string;
+  asset: string;
+  total_return_pct: number;
+  sharpe_ratio: number;
+  max_drawdown_pct: number;
+  win_rate: number;
+  total_trades: number;
+  profit_factor: number;
+  avg_trade_duration_days: number;
+}
+
+export interface AgentBacktestRun {
+  id: string;
+  name: string;
+  assets: string[];
+  timeframe: string;
+  start_date: string;
+  end_date: string;
+  status: 'running' | 'completed' | 'failed';
+  initial_capital: number;
+  results: {
+    strategy_results?: StrategyResult[];
+    best_strategy?: { name: string; description: string };
+    best_result_metrics?: StrategyResult;
+    ranking_analysis?: string;
+    recommendations?: string;
+    strategy_selection_reasoning?: string;
+  } | null;
+  equity_curve?: Array<{ timestamp: string; equity: number }>;
+  trades?: Array<{
+    entry_date: string;
+    exit_date: string;
+    entry_price: number;
+    exit_price: number;
+    pnl: number;
+    pnl_pct: number;
+    exit_reason: string;
+    duration_days: number;
+  }>;
+  created_at: string;
+  completed_at: string | null;
+}

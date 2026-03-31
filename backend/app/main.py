@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import agent, backtest, health, market, portfolio, risk, signals, ws
+from app.api import agent, backtest, data, health, market, portfolio, risk, signals, ws
 from app.config import settings
 from app.services.scheduler import start_scheduler, stop_scheduler
 
@@ -66,4 +66,5 @@ app.include_router(portfolio.router, prefix="/api")
 app.include_router(risk.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 app.include_router(backtest.router, prefix="/api")
+app.include_router(data.router, prefix="/api")
 app.include_router(ws.router)
