@@ -73,7 +73,7 @@ app.include_router(data.router, prefix="/api")
 app.include_router(ws.router)
 
 # Serve React frontend if built assets are present (production)
-_FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "frontend_dist")
+_FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend_dist")
 _FRONTEND_DIR = os.path.abspath(_FRONTEND_DIR)
 
 if os.path.isdir(_FRONTEND_DIR):
