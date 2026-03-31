@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api import agent, backtest, data, health, market, portfolio, risk, signals, ws
 from app.config import settings
@@ -69,7 +72,25 @@ app.include_router(backtest.router, prefix="/api")
 app.include_router(data.router, prefix="/api")
 app.include_router(ws.router)
 
+# Serve React frontend if built assets are present (production)
+_FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "frontend_dist")
+_FRONTEND_DIR = os.path.abspath(_FRONTEND_DIR)
 
-@app.get("/")
-async def root():
-    return {"message": "Trading Agent API", "docs": "/docs", "health": "/health"}
+if os.path.isdir(_FRONTEND_DIR):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_FRONTEND_DIR, "assets")), name="assets")
+
+    @app.get("/")
+    async def serve_index():
+        return FileResponse(os.path.join(_FRONTEND_DIR, "index.html"))
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """SPA fallback — serve index.html for all non-API routes."""
+        file_path = os.path.join(_FRONTEND_DIR, full_path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(_FRONTEND_DIR, "index.html"))
+else:
+    @app.get("/")
+    async def root():
+        return {"message": "Trading Agent API", "docs": "/docs", "health": "/health"}
