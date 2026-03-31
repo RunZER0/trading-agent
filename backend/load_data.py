@@ -29,8 +29,8 @@ async def main():
     print(f"Starting historical data load...")
     print(f"  Crypto: {CRYPTO_ASSETS}")
     print(f"  Forex:  {FOREX_PAIRS}")
-    print(f"  Timeframes: 1d + 1h (intraday)")
-    print(f"  Note: Alpha Vantage free = 25 req/day. 10 assets x 2 timeframes = 20 requests.\n")
+    print(f"  Timeframes: 1d + 1h + 4h")
+    print(f"  Note: 1d via Alpha Vantage, 1h/4h via yfinance (free, no key needed).\n")
 
     async def progress(msg):
         print(f"  {msg}")
@@ -38,7 +38,7 @@ async def main():
     results = await load_all_historical(
         crypto_assets=CRYPTO_ASSETS,
         forex_pairs=FOREX_PAIRS,
-        timeframes=["1d", "1h"],
+        timeframes=["1d", "1h", "4h"],
         progress_cb=progress,
     )
 
