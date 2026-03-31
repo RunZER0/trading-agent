@@ -58,6 +58,5 @@ services:
         source: /*
         destination: /index.html
     envVars:
-      # Set this to https://<your-backend>.onrender.com/api after first deploy
       - key: VITE_API_URL
-        sync: false
+        value: https://freedomtrader.onrender.com/api
