@@ -1,0 +1,47 @@
+services:
+  # FastAPI backend — also serves the built frontend as static files
+  - type: web
+    name: trading-agent-api
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    plan: starter
+    region: oregon
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ALPHA_VANTAGE_API_KEY
+        sync: false
+      - key: API_TOKEN
+        generateValue: true
+      - key: AGENT_INTERVAL_HOURS
+        value: "4"
+      - key: TRACKED_ASSETS
+        value: "BTC,ETH,SOL,EUR/USD,GBP/USD,USD/JPY"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+  # React frontend — built & served as static site
+  - type: web
+    name: trading-agent-dashboard
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: frontend/dist
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL
+        fromService:
+          type: web
+          name: trading-agent-api
+          property: host
