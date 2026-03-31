@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.api import agent, backtest, data, health, market, portfolio, risk, signals, ws
 from app.config import settings
@@ -68,3 +68,8 @@ app.include_router(market.router, prefix="/api")
 app.include_router(backtest.router, prefix="/api")
 app.include_router(data.router, prefix="/api")
 app.include_router(ws.router)
+
+
+@app.get("/")
+async def root():
+    return {"message": "Trading Agent API", "docs": "/docs", "health": "/health"}
