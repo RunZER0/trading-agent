@@ -17,13 +17,13 @@ export default function MarketData() {
 
   async function fetchData(asset: string) {
     setLoading(true);
-    const marketType = asset.includes('/') ? 'forex' : 'crypto';
     try {
-      const { data } = await api.get(`/market/${asset}/snapshot`, {
-        params: { market_type: marketType },
+      const { data } = await api.get(`/data/ohlcv/${encodeURIComponent(asset)}`, {
+        params: { timeframe: '1d', limit: 365 },
       });
-      setBars(data.bars || []);
-      setLatest(data.latest);
+      const fetchedBars: OHLCVBar[] = data.bars || [];
+      setBars(fetchedBars);
+      setLatest(fetchedBars.length > 0 ? fetchedBars[fetchedBars.length - 1] : null);
     } catch {
       setBars([]);
       setLatest(null);
