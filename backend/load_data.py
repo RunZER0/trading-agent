@@ -31,7 +31,7 @@ async def main():
     print(f"  Forex:  {FOREX_PAIRS}")
     print(f"  (This may take ~3 minutes due to Alpha Vantage rate limits)\n")
 
-    def progress(msg: str):
+    async def progress(msg):
         print(f"  {msg}")
 
     results = await load_all_historical(
