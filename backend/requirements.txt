@@ -15,6 +15,7 @@ openai==1.58.1
 # Market data
 alpha-vantage==3.0.0
 httpx==0.28.1
+yfinance==0.2.54
 
 # Technical analysis
 pandas==2.2.3

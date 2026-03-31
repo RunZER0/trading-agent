@@ -29,6 +29,7 @@ _active_load: dict = {}
 class LoadRequest(BaseModel):
     crypto_assets: list[str] = CRYPTO_ASSETS
     forex_pairs: list[str] = FOREX_PAIRS
+    timeframes: list[str] = ["1d"]
 
 
 class SingleAssetRequest(BaseModel):
@@ -56,6 +57,7 @@ async def load_all(request: LoadRequest, background_tasks: BackgroundTasks):
         result = await load_all_historical(
             crypto_assets=request.crypto_assets,
             forex_pairs=request.forex_pairs,
+            timeframes=request.timeframes,
         )
         _active_load = {"running": False, "result": result}
         logger.info(f"Bulk load complete: {result}")

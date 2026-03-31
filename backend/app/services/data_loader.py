@@ -8,6 +8,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+import pandas as pd
+import yfinance as yf
+
 from app.config import settings
 from app.dependencies import get_supabase
 from app.models.schemas import MarketType, OHLCVBar
@@ -85,6 +88,67 @@ async def fetch_forex_full(from_symbol: str, to_symbol: str) -> list[OHLCVBar]:
     return bars
 
 
+# yfinance symbol map (free, no API key needed)
+_YF_CRYPTO = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "BNB": "BNB-USD", "ADA": "ADA-USD"}
+_YF_FOREX  = {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X",
+              "AUD/USD": "AUDUSD=X", "USD/CAD": "USDCAD=X"}
+# Map our timeframe labels to yfinance interval strings
+_YF_INTERVAL = {"1h": "1h", "4h": "1h", "30m": "30m", "15m": "15m"}
+
+
+def _yf_download(yf_symbol: str, interval: str) -> pd.DataFrame:
+    """Synchronous yfinance download — run in executor."""
+    df = yf.download(
+        yf_symbol,
+        period="730d",   # max lookback for 1h is ~730 days
+        interval=interval,
+        progress=False,
+        auto_adjust=True,
+    )
+    # Flatten MultiIndex columns if present (multi-ticker download)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+
+async def fetch_yfinance_intraday(symbol: str, timeframe: str) -> list[OHLCVBar]:
+    """Fetch intraday bars for crypto or forex via yfinance (free, no key required).
+    For 4h, fetches 1h data and resamples."""
+    yf_symbol = _YF_CRYPTO.get(symbol) or _YF_FOREX.get(symbol)
+    if not yf_symbol:
+        logger.warning(f"No yfinance symbol mapping for {symbol}")
+        return []
+
+    yf_interval = _YF_INTERVAL.get(timeframe, "1h")
+    loop = asyncio.get_event_loop()
+    df = await loop.run_in_executor(None, _yf_download, yf_symbol, yf_interval)
+
+    if df is None or df.empty:
+        logger.warning(f"yfinance returned empty data for {symbol} ({yf_symbol}) {yf_interval}")
+        return []
+
+    bars: list[OHLCVBar] = []
+    for ts, row in df.iterrows():
+        try:
+            # ts is a pandas Timestamp with tz; convert to ISO string
+            ts_str = ts.isoformat()
+            bars.append(OHLCVBar(
+                timestamp=ts_str,
+                open=float(row["Open"]),
+                high=float(row["High"]),
+                low=float(row["Low"]),
+                close=float(row["Close"]),
+                volume=float(row.get("Volume", 0)),
+            ))
+        except (ValueError, TypeError, KeyError):
+            continue
+
+    if timeframe == "4h" and bars:
+        bars = _resample_to_4h(bars)
+
+    return bars
+
+
 # -----------------------------------------------
 # Store helpers
 # -----------------------------------------------
@@ -99,7 +163,12 @@ def _upsert_bars(asset: str, market_type: MarketType, bars: list[OHLCVBar], time
             "asset": asset,
             "market_type": market_type.value,
             "timeframe": timeframe,
-            "timestamp": bar.timestamp if isinstance(bar.timestamp, str) else bar.timestamp.isoformat()[:10],
+            # Daily bars: store date only (YYYY-MM-DD). Intraday: full ISO datetime.
+            "timestamp": (
+                (bar.timestamp[:10] if isinstance(bar.timestamp, str) else bar.timestamp.isoformat()[:10])
+                if timeframe == "1d"
+                else (bar.timestamp if isinstance(bar.timestamp, str) else bar.timestamp.isoformat())
+            ),
             "open": bar.open,
             "high": bar.high,
             "low": bar.low,
@@ -121,37 +190,46 @@ def _upsert_bars(asset: str, market_type: MarketType, bars: list[OHLCVBar], time
 
 
 def get_data_status() -> list[dict[str, Any]]:
-    """Return per-asset row counts and date ranges from Supabase."""
+    """Return per-asset row counts and date ranges from Supabase.
+    Uses exact count queries per asset+timeframe to avoid row-limit issues."""
     supabase = get_supabase()
-    # Get stats per asset+timeframe
-    resp = supabase.table("historical_data").select(
-        "asset, market_type, timeframe, timestamp"
-    ).execute()
-    rows = resp.data or []
-
-    # Aggregate
-    from collections import defaultdict
-    stats: dict[tuple, dict] = defaultdict(lambda: {"count": 0, "min_date": None, "max_date": None})
-    for row in rows:
-        key = (row["asset"], row["market_type"], row["timeframe"])
-        s = stats[key]
-        s["count"] += 1
-        ts = row["timestamp"]
-        if s["min_date"] is None or ts < s["min_date"]:
-            s["min_date"] = ts
-        if s["max_date"] is None or ts > s["max_date"]:
-            s["max_date"] = ts
-
+    combos = (
+        [(a, "crypto") for a in CRYPTO_ASSETS] +
+        [(p, "forex") for p in FOREX_PAIRS]
+    )
     result = []
-    for (asset, market_type, timeframe), s in sorted(stats.items()):
-        result.append({
-            "asset": asset,
-            "market_type": market_type,
-            "timeframe": timeframe,
-            "bar_count": s["count"],
-            "start_date": s["min_date"],
-            "end_date": s["max_date"],
-        })
+    for asset, market_type in combos:
+        for tf in ("1d", "1h", "4h"):
+            # count="exact" uses PostgREST Prefer: count=exact header; no rows returned
+            count_resp = (
+                supabase.table("historical_data")
+                .select("*", count="exact")
+                .eq("asset", asset).eq("timeframe", tf)
+                .limit(0)
+                .execute()
+            )
+            count = count_resp.count or 0
+            if count == 0:
+                continue
+            # Fetch first and last timestamps with minimal data
+            first = (
+                supabase.table("historical_data")
+                .select("timestamp").eq("asset", asset).eq("timeframe", tf)
+                .order("timestamp", desc=False).limit(1).execute()
+            )
+            last = (
+                supabase.table("historical_data")
+                .select("timestamp").eq("asset", asset).eq("timeframe", tf)
+                .order("timestamp", desc=True).limit(1).execute()
+            )
+            result.append({
+                "asset": asset,
+                "market_type": market_type,
+                "timeframe": tf,
+                "bar_count": count,
+                "start_date": first.data[0]["timestamp"] if first.data else None,
+                "end_date": last.data[0]["timestamp"] if last.data else None,
+            })
     return result
 
 
@@ -162,20 +240,24 @@ def get_data_status() -> list[dict[str, Any]]:
 async def load_all_historical(
     crypto_assets: list[str] | None = None,
     forex_pairs: list[str] | None = None,
+    timeframes: list[str] | None = None,
     progress_cb: Any = None,
 ) -> dict[str, Any]:
     """Fetch full historical data for all tracked assets and store in Supabase.
-    
+
     Args:
         crypto_assets: list of crypto symbols (defaults to settings)
         forex_pairs: list of forex pairs like "EUR/USD" (defaults to settings)
-        progress_cb: async callable(asset, status, bars_loaded) for WebSocket progress
+        timeframes: list of timeframes to load, e.g. ["1d", "1h", "4h"]
+                   Defaults to ["1d"] only. Note: intraday uses 25 req/day limit.
+        progress_cb: async callable(dict) for progress updates
 
     Returns:
         Summary dict with counts per asset.
     """
     crypto_assets = crypto_assets or settings.crypto_symbols
     forex_pairs = forex_pairs or settings.forex_pairs
+    timeframes = timeframes or ["1d"]
 
     summary: dict[str, Any] = {"loaded": {}, "errors": {}, "started_at": datetime.now(timezone.utc).isoformat()}
 
@@ -184,39 +266,68 @@ async def load_all_historical(
         if progress_cb:
             await progress_cb({"asset": asset, "status": status, "bars": count})
 
-    # Crypto
-    for symbol in crypto_assets:
-        try:
-            await _report(symbol, "fetching")
-            bars = await fetch_crypto_full(symbol)
-            count = _upsert_bars(symbol, MarketType.CRYPTO, bars)
-            summary["loaded"][symbol] = count
-            await _report(symbol, "done", count)
-        except Exception as e:
-            logger.error(f"Failed to load crypto {symbol}: {e}")
-            summary["errors"][symbol] = str(e)
-            await _report(symbol, f"error: {e}")
+    for tf in timeframes:
+        is_daily = tf == "1d"
 
-    # Forex
-    for pair in forex_pairs:
-        try:
+        # Crypto
+        for symbol in crypto_assets:
+            key = f"{symbol}:{tf}"
+            try:
+                await _report(symbol, f"fetching {tf}")
+                if is_daily:
+                    bars = await fetch_crypto_full(symbol)
+                else:
+                    bars = await fetch_yfinance_intraday(symbol, tf)
+                count = _upsert_bars(symbol, MarketType.CRYPTO, bars, timeframe=tf)
+                summary["loaded"][key] = count
+                await _report(symbol, f"done {tf}", count)
+            except Exception as e:
+                logger.error(f"Failed to load crypto {symbol} {tf}: {e}")
+                summary["errors"][key] = str(e)
+                await _report(symbol, f"error: {e}")
+
+        # Forex
+        for pair in forex_pairs:
+            key = f"{pair}:{tf}"
             parts = pair.split("/")
             if len(parts) != 2:
                 continue
             from_sym, to_sym = parts
-            await _report(pair, "fetching")
-            bars = await fetch_forex_full(from_sym, to_sym)
-            count = _upsert_bars(pair, MarketType.FOREX, bars)
-            summary["loaded"][pair] = count
-            await _report(pair, "done", count)
-        except Exception as e:
-            logger.error(f"Failed to load forex {pair}: {e}")
-            summary["errors"][pair] = str(e)
-            await _report(pair, f"error: {e}")
+            try:
+                await _report(pair, f"fetching {tf}")
+                if is_daily:
+                    bars = await fetch_forex_full(from_sym, to_sym)
+                else:
+                    bars = await fetch_yfinance_intraday(pair, tf)
+                count = _upsert_bars(pair, MarketType.FOREX, bars, timeframe=tf)
+                summary["loaded"][key] = count
+                await _report(pair, f"done {tf}", count)
+            except Exception as e:
+                logger.error(f"Failed to load forex {pair} {tf}: {e}")
+                summary["errors"][key] = str(e)
+                await _report(pair, f"error: {e}")
 
     summary["finished_at"] = datetime.now(timezone.utc).isoformat()
     summary["total_bars"] = sum(summary["loaded"].values())
     return summary
+
+
+def _resample_to_4h(bars: list[OHLCVBar]) -> list[OHLCVBar]:
+    """Resample 1h bars into 4h candles (groups of 4)."""
+    result: list[OHLCVBar] = []
+    for i in range(0, len(bars), 4):
+        chunk = bars[i:i+4]
+        if not chunk:
+            continue
+        result.append(OHLCVBar(
+            timestamp=chunk[0].timestamp,
+            open=chunk[0].open,
+            high=max(b.high for b in chunk),
+            low=min(b.low for b in chunk),
+            close=chunk[-1].close,
+            volume=sum(b.volume for b in chunk),
+        ))
+    return result
 
 
 async def load_single_asset(asset: str, market_type: MarketType) -> dict[str, Any]:

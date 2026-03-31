@@ -38,6 +38,8 @@ export default function DataManager() {
   const [statuses, setStatuses] = useState<AssetStatus[]>([]);
   const [loadRunning, setLoadRunning] = useState(false);
   const [chartAsset, setChartAsset] = useState<string>('BTC');
+  const [chartTimeframe, setChartTimeframe] = useState<string>('1d');
+  const [selectedTimeframes, setSelectedTimeframes] = useState<string[]>(['1d', '1h']);
   const [bars, setBars] = useState<OHLCVBar[]>([]);
   const [loadingChart, setLoadingChart] = useState(false);
   const [singleLoading, setSingleLoading] = useState<string | null>(null);
@@ -49,8 +51,8 @@ export default function DataManager() {
   }, []);
 
   useEffect(() => {
-    loadChart(chartAsset);
-  }, [chartAsset]);
+    loadChart(chartAsset, chartTimeframe);
+  }, [chartAsset, chartTimeframe]);
 
   async function loadStatuses() {
     try {
@@ -59,11 +61,12 @@ export default function DataManager() {
     } catch { /* silent */ }
   }
 
-  async function loadChart(asset: string) {
+  async function loadChart(asset: string, timeframe = '1d') {
     setLoadingChart(true);
     try {
+      const limit = timeframe === '1d' ? 365 : 720;
       const { data } = await api.get(`/data/ohlcv/${asset}`, {
-        params: { timeframe: '1d', limit: 365 },
+        params: { timeframe, limit },
       });
       setBars(data.bars || []);
     } catch {
@@ -78,6 +81,7 @@ export default function DataManager() {
     await api.post('/data/load-all', {
       crypto_assets: ALL_ASSETS.filter(a => a.type === 'crypto').map(a => a.symbol),
       forex_pairs: ALL_ASSETS.filter(a => a.type === 'forex').map(a => a.symbol),
+      timeframes: selectedTimeframes,
     });
 
     // Poll until complete
@@ -105,15 +109,38 @@ export default function DataManager() {
     }
   }
 
-  function getStatus(asset: string): AssetStatus | undefined {
-    return statuses.find(s => s.asset === asset && s.timeframe === '1d');
+  function getStatus(asset: string, timeframe = '1d'): AssetStatus | undefined {
+    return statuses.find(s => s.asset === asset && s.timeframe === timeframe);
+  }
+
+  function toggleTimeframe(tf: string) {
+    setSelectedTimeframes(prev =>
+      prev.includes(tf)
+        ? prev.length > 1 ? prev.filter(t => t !== tf) : prev  // keep at least one
+        : [...prev, tf]
+    );
   }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-white">Data Manager</h2>
-        <div className="flex gap-3">
+        <div className="flex items-center gap-3">
+          {/* Timeframe selectors */}
+          <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-1.5">
+            <span className="text-xs text-gray-500 mr-1">Load:</span>
+            {['1d', '1h', '4h'].map(tf => (
+              <label key={tf} className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedTimeframes.includes(tf)}
+                  onChange={() => toggleTimeframe(tf)}
+                  className="w-3 h-3 accent-blue-500"
+                />
+                <span className="text-xs text-gray-300">{tf}</span>
+              </label>
+            ))}
+          </div>
           <button
             onClick={loadStatuses}
             className="px-3 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 text-sm
@@ -145,7 +172,7 @@ export default function DataManager() {
       {/* Asset grid */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
         {ALL_ASSETS.map(({ symbol, type }) => {
-          const s = getStatus(symbol);
+          const s = getStatus(symbol, '1d');
           const hasData = s && s.bar_count > 0;
           const isLoading = singleLoading === symbol;
           return (
@@ -172,14 +199,19 @@ export default function DataManager() {
               }`}>
                 {type}
               </span>
-              {s ? (
-                <div className="text-xs text-gray-500 mt-1">
-                  <p>{s.bar_count.toLocaleString()} bars</p>
-                  <p>{s.start_date?.slice(0, 7)} → {s.end_date?.slice(0, 7)}</p>
-                </div>
-              ) : (
-                <p className="text-xs text-gray-600 mt-1">No data</p>
-              )}
+              <div className="text-xs text-gray-500 mt-1 space-y-0.5">
+                {['1d', '1h'].map(tf => {
+                  const tfStatus = getStatus(symbol, tf);
+                  return tfStatus && tfStatus.bar_count > 0 ? (
+                    <p key={tf}>
+                      <span className="text-gray-600">{tf}:</span>{' '}
+                      {tfStatus.bar_count.toLocaleString()} bars
+                    </p>
+                  ) : (
+                    <p key={tf} className="text-gray-700">{tf}: —</p>
+                  );
+                })}
+              </div>
               <button
                 onClick={(e) => { e.stopPropagation(); handleLoadSingle(symbol, type); }}
                 disabled={isLoading || loadRunning}
@@ -199,10 +231,28 @@ export default function DataManager() {
       {/* Chart */}
       <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-medium text-gray-300">{chartAsset} — Daily OHLCV</h3>
-          {!loadingChart && bars.length > 0 && (
-            <span className="text-xs text-gray-600">{bars.length} bars</span>
-          )}
+          <h3 className="text-sm font-medium text-gray-300">{chartAsset} — OHLCV</h3>
+          <div className="flex items-center gap-3">
+            {!loadingChart && bars.length > 0 && (
+              <span className="text-xs text-gray-600">{bars.length} bars</span>
+            )}
+            {/* Timeframe tabs */}
+            <div className="flex bg-gray-800 rounded-lg p-0.5">
+              {['1d', '1h', '4h'].map(tf => (
+                <button
+                  key={tf}
+                  onClick={() => setChartTimeframe(tf)}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    chartTimeframe === tf
+                      ? 'bg-gray-700 text-white'
+                      : 'text-gray-500 hover:text-gray-300'
+                  }`}
+                >
+                  {tf}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
         {loadingChart ? (
           <div className="flex items-center justify-center h-96 text-gray-600">
