@@ -9,6 +9,7 @@ import {
   type IChartApi,
   type CandlestickData,
   type Time,
+  type UTCTimestamp,
 } from 'lightweight-charts';
 
 interface OHLCVBar {
@@ -32,6 +33,16 @@ interface CandlestickChartProps {
   trades?: TradeMarker[];
   height?: number;
   title?: string;
+}
+
+/** Convert ISO timestamp → lightweight-charts Time.
+ *  Daily bars ("YYYY-MM-DD") use string form.
+ *  Intraday bars use Unix seconds (UTCTimestamp). */
+function toChartTime(ts: string): Time {
+  if (ts.length > 10) {
+    return Math.floor(new Date(ts).getTime() / 1000) as UTCTimestamp;
+  }
+  return ts.slice(0, 10) as Time;
 }
 
 export default function CandlestickChart({
@@ -90,16 +101,13 @@ export default function CandlestickChart({
     });
 
     const candleData: CandlestickData[] = bars
-      .map((b) => {
-        const t = b.timestamp.slice(0, 10); // "YYYY-MM-DD"
-        return {
-          time: t as Time,
-          open: b.open,
-          high: b.high,
-          low: b.low,
-          close: b.close,
-        };
-      })
+      .map((b) => ({
+        time: toChartTime(b.timestamp),
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+      }))
       .sort((a, b) => (a.time < b.time ? -1 : 1));
 
     candleSeries.setData(candleData);
@@ -116,7 +124,7 @@ export default function CandlestickChart({
     volumeSeries.setData(
       bars
         .map((b) => ({
-          time: b.timestamp.slice(0, 10) as Time,
+          time: toChartTime(b.timestamp),
           value: b.volume,
           color: b.close >= b.open ? '#166534' : '#7f1d1d',
         }))
@@ -127,7 +135,7 @@ export default function CandlestickChart({
     if (trades.length > 0) {
       const markers = trades
         .map((t) => ({
-          time: t.timestamp.slice(0, 10) as Time,
+          time: toChartTime(t.timestamp),
           position: t.direction === 'BUY' ? ('belowBar' as const) : ('aboveBar' as const),
           color: t.direction === 'BUY' ? '#22c55e' : '#ef4444',
           shape: t.direction === 'BUY' ? ('arrowUp' as const) : ('arrowDown' as const),

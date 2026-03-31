@@ -129,7 +129,7 @@ export default function DataManager() {
           {/* Timeframe selectors */}
           <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-1.5">
             <span className="text-xs text-gray-500 mr-1">Load:</span>
-            {['1d', '1h', '4h'].map(tf => (
+            {['1d', '1h', '4h', '15m'].map(tf => (
               <label key={tf} className="flex items-center gap-1 cursor-pointer">
                 <input
                   type="checkbox"
@@ -238,7 +238,7 @@ export default function DataManager() {
             )}
             {/* Timeframe tabs */}
             <div className="flex bg-gray-800 rounded-lg p-0.5">
-              {['1d', '1h', '4h'].map(tf => (
+              {['1d', '4h', '1h', '15m'].map(tf => (
                 <button
                   key={tf}
                   onClick={() => setChartTimeframe(tf)}

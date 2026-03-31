@@ -98,9 +98,12 @@ _YF_INTERVAL = {"1h": "1h", "4h": "1h", "30m": "30m", "15m": "15m"}
 
 def _yf_download(yf_symbol: str, interval: str) -> pd.DataFrame:
     """Synchronous yfinance download — run in executor."""
+    # yfinance enforces max lookback per interval:
+    #   1h  → 730 days, 4h (fetched as 1h) → 730 days, 15m → 60 days
+    period = "60d" if interval == "15m" else "730d"
     df = yf.download(
         yf_symbol,
-        period="730d",   # max lookback for 1h is ~730 days
+        period=period,
         interval=interval,
         progress=False,
         auto_adjust=True,
@@ -199,7 +202,7 @@ def get_data_status() -> list[dict[str, Any]]:
     )
     result = []
     for asset, market_type in combos:
-        for tf in ("1d", "1h", "4h"):
+        for tf in ("1d", "1h", "4h", "15m"):
             # count="exact" uses PostgREST Prefer: count=exact header; no rows returned
             count_resp = (
                 supabase.table("historical_data")
