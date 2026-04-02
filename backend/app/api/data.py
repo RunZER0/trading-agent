@@ -92,7 +92,7 @@ async def get_ohlcv(
     timeframe: str = Query("1d"),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
-    limit: int = Query(500),
+    limit: int = Query(5000),
 ):
     """Return stored OHLCV bars for an asset — used for chart visualization.
     Asset is a query param to safely handle forex pairs with slashes (EUR/USD)."""

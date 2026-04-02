@@ -18,9 +18,9 @@ const ALL_ASSETS = [
 ];
 
 const TIMEFRAMES = [
-  { label: '1D', value: '1d', limit: 365 },
-  { label: '4H', value: '4h', limit: 500 },
-  { label: '1H', value: '1h', limit: 720 },
+  { label: '1D', value: '1d', limit: 5000 },
+  { label: '4H', value: '4h', limit: 3000 },
+  { label: '1H', value: '1h', limit: 2000 },
   { label: '15m', value: '15m', limit: 500 },
 ];
 
