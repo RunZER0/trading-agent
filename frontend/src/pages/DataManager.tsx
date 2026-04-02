@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Download, RefreshCw, CheckCircle, AlertCircle, Loader } from 'lucide-react';
 import api from '../lib/api';
-import CandlestickChart from '../components/CandlestickChart';
 
 interface AssetStatus {
   asset: string;
@@ -12,14 +11,6 @@ interface AssetStatus {
   end_date: string | null;
 }
 
-interface OHLCVBar {
-  timestamp: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
 
 const ALL_ASSETS = [
   { symbol: 'BTC', type: 'crypto' },
@@ -37,11 +28,7 @@ const ALL_ASSETS = [
 export default function DataManager() {
   const [statuses, setStatuses] = useState<AssetStatus[]>([]);
   const [loadRunning, setLoadRunning] = useState(false);
-  const [chartAsset, setChartAsset] = useState<string>('BTC');
-  const [chartTimeframe, setChartTimeframe] = useState<string>('1d');
   const [selectedTimeframes, setSelectedTimeframes] = useState<string[]>(['1d', '1h']);
-  const [bars, setBars] = useState<OHLCVBar[]>([]);
-  const [loadingChart, setLoadingChart] = useState(false);
   const [singleLoading, setSingleLoading] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -50,30 +37,11 @@ export default function DataManager() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
-  useEffect(() => {
-    loadChart(chartAsset, chartTimeframe);
-  }, [chartAsset, chartTimeframe]);
-
   async function loadStatuses() {
     try {
       const { data } = await api.get('/data/status');
       setStatuses(data.assets || []);
     } catch { /* silent */ }
-  }
-
-  async function loadChart(asset: string, timeframe = '1d') {
-    setLoadingChart(true);
-    try {
-      const limit = timeframe === '1d' ? 365 : 720;
-      const { data } = await api.get(`/data/ohlcv/${asset}`, {
-        params: { timeframe, limit },
-      });
-      setBars(data.bars || []);
-    } catch {
-      setBars([]);
-    } finally {
-      setLoadingChart(false);
-    }
   }
 
   async function handleLoadAll() {
@@ -92,7 +60,6 @@ export default function DataManager() {
           setLoadRunning(false);
           if (pollRef.current) clearInterval(pollRef.current);
           await loadStatuses();
-          await loadChart(chartAsset);
         }
       } catch { /* ignore */ }
     }, 5000);
@@ -103,7 +70,6 @@ export default function DataManager() {
     try {
       await api.post('/data/load-asset', { asset, market_type: type });
       await loadStatuses();
-      if (asset === chartAsset) await loadChart(asset);
     } finally {
       setSingleLoading(null);
     }
@@ -178,12 +144,7 @@ export default function DataManager() {
           return (
             <div
               key={symbol}
-              onClick={() => setChartAsset(symbol)}
-              className={`bg-gray-900 rounded-xl border p-3 cursor-pointer transition-all ${
-                chartAsset === symbol
-                  ? 'border-green-500/50 ring-1 ring-green-500/20'
-                  : 'border-gray-800 hover:border-gray-600'
-              }`}
+              className={`bg-gray-900 rounded-xl border p-3 cursor-default transition-all border-gray-800 hover:border-gray-600`}
             >
               <div className="flex items-center justify-between mb-1">
                 <span className="text-sm font-semibold text-white">{symbol}</span>
@@ -226,41 +187,6 @@ export default function DataManager() {
             </div>
           );
         })}
-      </div>
-
-      {/* Chart */}
-      <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-medium text-gray-300">{chartAsset} — OHLCV</h3>
-          <div className="flex items-center gap-3">
-            {!loadingChart && bars.length > 0 && (
-              <span className="text-xs text-gray-600">{bars.length} bars</span>
-            )}
-            {/* Timeframe tabs */}
-            <div className="flex bg-gray-800 rounded-lg p-0.5">
-              {['1d', '4h', '1h', '15m'].map(tf => (
-                <button
-                  key={tf}
-                  onClick={() => setChartTimeframe(tf)}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-                    chartTimeframe === tf
-                      ? 'bg-gray-700 text-white'
-                      : 'text-gray-500 hover:text-gray-300'
-                  }`}
-                >
-                  {tf}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-        {loadingChart ? (
-          <div className="flex items-center justify-center h-96 text-gray-600">
-            <Loader size={24} className="animate-spin" />
-          </div>
-        ) : (
-          <CandlestickChart bars={bars} height={400} />
-        )}
       </div>
     </div>
   );

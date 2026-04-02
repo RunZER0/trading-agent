@@ -45,7 +45,7 @@ export default function Backtest() {
 
   async function loadOhlcv(asset: string) {
     try {
-      const { data } = await api.get(`/data/ohlcv/${asset}`, { params: { timeframe: '1d', limit: 500 } });
+      const { data } = await api.get('/data/ohlcv', { params: { asset, timeframe: '1d', limit: 500 } });
       setOhlcvBars(data.bars || []);
     } catch { setOhlcvBars([]); }
   }

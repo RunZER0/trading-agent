@@ -4,6 +4,7 @@ import {
   ColorType,
   CrosshairMode,
   CandlestickSeries,
+  AreaSeries,
   HistogramSeries,
   createSeriesMarkers,
   type IChartApi,
@@ -33,6 +34,7 @@ interface CandlestickChartProps {
   trades?: TradeMarker[];
   height?: number;
   title?: string;
+  mode?: 'candle' | 'line';
 }
 
 /** Convert ISO timestamp → lightweight-charts Time.
@@ -50,6 +52,7 @@ export default function CandlestickChart({
   trades = [],
   height = 400,
   title,
+  mode = 'candle',
 }: CandlestickChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -90,27 +93,47 @@ export default function CandlestickChart({
 
     chartRef.current = chart;
 
-    // Candlestick series
-    const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#22c55e',
-      downColor: '#ef4444',
-      borderUpColor: '#22c55e',
-      borderDownColor: '#ef4444',
-      wickUpColor: '#22c55e',
-      wickDownColor: '#ef4444',
-    });
+    // Price series — candlestick or area/line
+    const sortedBars = [...bars].sort((a, b) =>
+      toChartTime(a.timestamp) < toChartTime(b.timestamp) ? -1 : 1
+    );
 
-    const candleData: CandlestickData[] = bars
-      .map((b) => ({
-        time: toChartTime(b.timestamp),
-        open: b.open,
-        high: b.high,
-        low: b.low,
-        close: b.close,
-      }))
-      .sort((a, b) => (a.time < b.time ? -1 : 1));
+    let priceSeries: ReturnType<typeof chart.addSeries>;
 
-    candleSeries.setData(candleData);
+    if (mode === 'candle') {
+      const cs = chart.addSeries(CandlestickSeries, {
+        upColor: '#22c55e',
+        downColor: '#ef4444',
+        borderUpColor: '#22c55e',
+        borderDownColor: '#ef4444',
+        wickUpColor: '#22c55e',
+        wickDownColor: '#ef4444',
+      });
+      cs.setData(
+        sortedBars.map((b) => ({
+          time: toChartTime(b.timestamp),
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+        } as CandlestickData))
+      );
+      priceSeries = cs;
+    } else {
+      const as = chart.addSeries(AreaSeries, {
+        lineColor: '#22c55e',
+        topColor: 'rgba(34,197,94,0.25)',
+        bottomColor: 'rgba(34,197,94,0.01)',
+        lineWidth: 2,
+      });
+      as.setData(
+        sortedBars.map((b) => ({
+          time: toChartTime(b.timestamp),
+          value: b.close,
+        }))
+      );
+      priceSeries = as;
+    }
 
     // Volume histogram
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -122,13 +145,11 @@ export default function CandlestickChart({
       scaleMargins: { top: 0.8, bottom: 0 },
     });
     volumeSeries.setData(
-      bars
-        .map((b) => ({
-          time: toChartTime(b.timestamp),
-          value: b.volume,
-          color: b.close >= b.open ? '#166534' : '#7f1d1d',
-        }))
-        .sort((a, b) => (a.time < b.time ? -1 : 1))
+      sortedBars.map((b) => ({
+        time: toChartTime(b.timestamp),
+        value: b.volume,
+        color: b.close >= b.open ? '#166534' : '#7f1d1d',
+      }))
     );
 
     // Trade markers
@@ -143,7 +164,7 @@ export default function CandlestickChart({
           size: 1,
         }))
         .sort((a, b) => (a.time < b.time ? -1 : 1));
-      createSeriesMarkers(candleSeries, markers);
+      createSeriesMarkers(priceSeries, markers);
     }
 
     chart.timeScale().fitContent();
@@ -163,7 +184,7 @@ export default function CandlestickChart({
         chartRef.current = null;
       }
     };
-  }, [bars, trades, height]);
+  }, [bars, trades, height, mode]);
 
   return (
     <div className="w-full">
