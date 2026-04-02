@@ -76,6 +76,7 @@ def load_historical_from_supabase(
         .gte("timestamp", start_date)
         .lte("timestamp", end_date)
         .order("timestamp")
+        .limit(50000)  # Supabase PostgREST caps at 1000 rows by default without this
         .execute()
     )
 
