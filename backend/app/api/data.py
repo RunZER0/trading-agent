@@ -92,9 +92,10 @@ async def get_ohlcv(
     timeframe: str = Query("1d"),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
-    limit: int = Query(5000),
+    limit: int = Query(50000),
 ):
     """Return stored OHLCV bars for an asset — used for chart visualization.
+    Ordered oldest→newest so the chart always receives full history.
     Asset is a query param to safely handle forex pairs with slashes (EUR/USD)."""
     supabase = get_supabase()
     query = (
@@ -102,7 +103,7 @@ async def get_ohlcv(
         .select("timestamp,open,high,low,close,volume")
         .eq("asset", asset)
         .eq("timeframe", timeframe)
-        .order("timestamp", desc=True)  # Newest first so limit gives us recent bars
+        .order("timestamp", desc=False)  # ASC: oldest first → chart chronological order
     )
     if start_date:
         query = query.gte("timestamp", start_date)
@@ -110,8 +111,7 @@ async def get_ohlcv(
         query = query.lte("timestamp", end_date)
     query = query.limit(limit)
     resp = query.execute()
-    # Reverse so chart receives bars in chronological (ascending) order
-    bars = list(reversed(resp.data or []))
+    bars = resp.data or []
     return {
         "asset": asset,
         "timeframe": timeframe,

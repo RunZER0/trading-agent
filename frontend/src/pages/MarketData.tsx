@@ -18,10 +18,10 @@ const ALL_ASSETS = [
 ];
 
 const TIMEFRAMES = [
-  { label: '1D', value: '1d', limit: 5000 },
-  { label: '4H', value: '4h', limit: 3000 },
-  { label: '1H', value: '1h', limit: 2000 },
-  { label: '15m', value: '15m', limit: 500 },
+  { label: '1D', value: '1d' },
+  { label: '4H', value: '4h' },
+  { label: '1H', value: '1h' },
+  { label: '15m', value: '15m' },
 ];
 
 export default function MarketData() {
@@ -30,18 +30,20 @@ export default function MarketData() {
   const [chartMode, setChartMode] = useState<'candle' | 'line'>('candle');
   const [bars, setBars] = useState<OHLCVBar[]>([]);
   const [loading, setLoading] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
   useEffect(() => {
-    fetchData(selectedAsset, timeframe);
+    fetchData(selectedAsset, timeframe, startDate, endDate);
   }, [selectedAsset, timeframe]);
 
-  async function fetchData(asset: string, tf: string) {
+  async function fetchData(asset: string, tf: string, sd = startDate, ed = endDate) {
     setLoading(true);
-    const tfCfg = TIMEFRAMES.find(t => t.value === tf) ?? TIMEFRAMES[0];
     try {
-      const { data } = await api.get('/data/ohlcv', {
-        params: { asset, timeframe: tf, limit: tfCfg.limit },
-      });
+      const params: Record<string, string> = { asset, timeframe: tf };
+      if (sd) params.start_date = sd;
+      if (ed) params.end_date = ed;
+      const { data } = await api.get('/data/ohlcv', { params });
       setBars(data.bars || []);
     } catch {
       setBars([]);
@@ -57,14 +59,38 @@ export default function MarketData() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="text-2xl font-bold text-white">Market Data</h2>
-        <button
-          onClick={() => fetchData(selectedAsset, timeframe)}
-          className="px-3 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 text-sm flex items-center gap-2"
-        >
-          <RefreshCw size={14} /> Refresh
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Date range filter */}
+          <label className="text-xs text-gray-500">From</label>
+          <input
+            type="date"
+            value={startDate}
+            onChange={e => setStartDate(e.target.value)}
+            className="bg-gray-800 text-gray-300 text-sm rounded-lg px-2 py-1.5 border border-gray-700 focus:outline-none focus:border-green-500"
+          />
+          <label className="text-xs text-gray-500">To</label>
+          <input
+            type="date"
+            value={endDate}
+            onChange={e => setEndDate(e.target.value)}
+            className="bg-gray-800 text-gray-300 text-sm rounded-lg px-2 py-1.5 border border-gray-700 focus:outline-none focus:border-green-500"
+          />
+          <button
+            onClick={() => { setStartDate(''); setEndDate(''); fetchData(selectedAsset, timeframe, '', ''); }}
+            className="px-2 py-1.5 bg-gray-800 text-gray-500 rounded-lg hover:bg-gray-700 text-xs"
+            title="Clear date range"
+          >
+            ✕
+          </button>
+          <button
+            onClick={() => fetchData(selectedAsset, timeframe)}
+            className="px-3 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 text-sm flex items-center gap-2"
+          >
+            <RefreshCw size={14} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Asset selector */}
