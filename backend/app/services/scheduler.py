@@ -19,10 +19,9 @@ async def _scheduled_agent_run():
 
     logger.info("Scheduled agent run starting...")
     try:
-        state = await run_trading_agent(trigger_type="scheduled")
+        result = await run_trading_agent(trigger_type="scheduled")
         logger.info(
-            f"Scheduled run completed: {len(state.trading_signals)} signals, "
-            f"{len(state.errors)} errors"
+            f"Scheduled run completed: {result.get('signals_placed', 0)} signals placed"
         )
     except Exception as e:
         logger.error(f"Scheduled agent run failed: {e}")

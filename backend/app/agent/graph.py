@@ -1,157 +1,176 @@
-"""LangGraph agent definition — the trading agent's brain."""
+"""
+Live trading agent — a real ReAct agent built on LangGraph.
+
+The agent has access to tools and decides for itself:
+- Which assets to look at first
+- Which timeframes and indicators to pull
+- Whether to check news
+- Whether to check existing portfolio positions
+- When it has enough information to place or skip a signal
+- How many assets to analyse before concluding
+
+It loops (Reason → Act → Observe) until it decides it is done, then stops.
+"""
 
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+from typing_extensions import Annotated, TypedDict
 
-from app.agent.nodes import (
-    analyze_market_node,
-    compute_technicals_node,
-    evaluate_risk_node,
-    fetch_market_data_node,
-    fetch_news_node,
-    generate_signal_node,
-    persist_results_node,
-)
-from app.agent.state import TradingAgentState
+from app.agent.tools import LIVE_AGENT_TOOLS
 from app.config import settings
 from app.dependencies import get_supabase
+from app.services.llm import decision_llm
 
 logger = logging.getLogger(__name__)
 
+SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "market_analyst.md").read_text(encoding="utf-8") + """
 
-def _should_generate_signals(state: TradingAgentState) -> str:
-    """Conditional edge: skip signal generation if no analyses available."""
-    if not state.market_analyses:
-        return "persist_results"
-    return "evaluate_risk"
+## You are an autonomous trading agent with the following tools:
+- `get_ohlcv(asset, timeframe, limit)` — fetch candlestick data from the database
+- `compute_indicators(asset, timeframe)` — compute RSI, MACD, EMA, Bollinger Bands, ADX, ATR, support/resistance
+- `get_news_sentiment(assets)` — fetch recent news headlines and sentiment scores
+- `get_portfolio_state()` — see currently open positions
+- `get_previous_signals(asset)` — see recent signal history for an asset
+- `place_signal(asset, direction, confidence, entry_price, stop_loss, take_profit, position_size_pct, reasoning, agent_run_id)` — emit a trading signal
 
+## Workflow — decide for yourself:
+1. Start by checking the portfolio state and recent signals to understand existing exposure
+2. For each asset you want to analyse: fetch OHLCV, then compute indicators, optionally check news
+3. Reason about the data. If you see a high-confidence setup (>=60), place a signal. Otherwise skip.
+4. You do NOT need to analyse every asset — skip assets where the data is clearly not interesting
+5. When you are done with all assets, stop. Do not loop unnecessarily.
 
-def build_trading_graph() -> StateGraph:
-    """Build and compile the LangGraph trading agent.
-
-    Graph flow:
-        START
-          ├─→ fetch_market_data
-          │       ├─→ compute_technicals ─┐
-          │       └─→ fetch_news ─────────┤
-          │                               ▼
-          │                        analyze_market
-          │                               │
-          │                    (conditional: has analyses?)
-          │                        ┌──────┴──────┐
-          │                        ▼              ▼
-          │                  evaluate_risk    persist_results
-          │                        │              │
-          │                        ▼              │
-          │                  generate_signal      │
-          │                        │              │
-          │                        ▼              │
-          │                  persist_results ◄────┘
-          │                        │
-          └────────────────────── END
-    """
-    graph = StateGraph(TradingAgentState)
-
-    # Add nodes
-    graph.add_node("fetch_market_data", fetch_market_data_node)
-    graph.add_node("compute_technicals", compute_technicals_node)
-    graph.add_node("fetch_news", fetch_news_node)
-    graph.add_node("analyze_market", analyze_market_node)
-    graph.add_node("evaluate_risk", evaluate_risk_node)
-    graph.add_node("generate_signal", generate_signal_node)
-    graph.add_node("persist_results", persist_results_node)
-
-    # Edges
-    graph.add_edge(START, "fetch_market_data")
-    graph.add_edge("fetch_market_data", "compute_technicals")
-    graph.add_edge("fetch_market_data", "fetch_news")
-    graph.add_edge("compute_technicals", "analyze_market")
-    graph.add_edge("fetch_news", "analyze_market")
-
-    # Conditional: only generate signals if we have analyses
-    graph.add_conditional_edges(
-        "analyze_market",
-        _should_generate_signals,
-        {"evaluate_risk": "evaluate_risk", "persist_results": "persist_results"},
-    )
-    graph.add_edge("evaluate_risk", "generate_signal")
-    graph.add_edge("generate_signal", "persist_results")
-    graph.add_edge("persist_results", END)
-
-    return graph
+## Rules:
+- Never place a signal with confidence < 60
+- Always set a stop_loss and take_profit
+- HOLD is a valid conclusion — do not force trades
+- Be concise in tool calls — do not repeat the same call twice
+"""
 
 
-# Compiled graph (singleton)
-trading_agent = build_trading_graph().compile()
+# ─────────────────────────────────────────────────────────────────────────────
+# State
+# ─────────────────────────────────────────────────────────────────────────────
 
+class LiveAgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+    agent_run_id: str
+    assets: list[str]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Nodes
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm_with_tools = decision_llm.bind_tools(LIVE_AGENT_TOOLS)
+
+
+async def agent_node(state: LiveAgentState) -> dict:
+    """The LLM reasons and decides which tool to call next (or stops)."""
+    response = await llm_with_tools.ainvoke(state["messages"])
+    return {"messages": [response]}
+
+
+def should_continue(state: LiveAgentState) -> str:
+    """Route: if the last message has tool calls, execute them. Otherwise end."""
+    last = state["messages"][-1]
+    if isinstance(last, AIMessage) and last.tool_calls:
+        return "tools"
+    return END
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Graph
+# ─────────────────────────────────────────────────────────────────────────────
+
+tool_node = ToolNode(LIVE_AGENT_TOOLS)
+
+graph = StateGraph(LiveAgentState)
+graph.add_node("agent", agent_node)
+graph.add_node("tools", tool_node)
+
+graph.add_edge(START, "agent")
+graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+graph.add_edge("tools", "agent")
+
+trading_agent = graph.compile()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def run_trading_agent(
     trigger_type: str = "manual",
     assets: list[str] | None = None,
-) -> TradingAgentState:
-    """Execute the full trading agent pipeline.
+) -> dict[str, Any]:
+    """Run the live trading agent. Returns the final state dict."""
 
-    Args:
-        trigger_type: "manual", "scheduled", or "backtest"
-        assets: override asset list (defaults to config)
-
-    Returns:
-        Final agent state with signals and metadata.
-    """
-    # Build asset list
     if assets is None:
-        assets = []
-        for sym in settings.crypto_symbols:
-            assets.append(sym)
-        for pair in settings.forex_pairs:
-            assets.append(pair)
+        assets = list(settings.crypto_symbols) + list(settings.forex_pairs)
 
-    # Create agent run record in Supabase
     supabase = get_supabase()
     run_record = supabase.table("agent_runs").insert({
         "trigger_type": trigger_type,
         "status": "running",
         "assets_analyzed": assets,
     }).execute()
+    run_id = run_record.data[0]["id"] if run_record.data else str(uuid.uuid4())
 
-    run_id = run_record.data[0]["id"] if run_record.data else None
-
-    # Build initial state
-    initial_state = TradingAgentState(
-        assets=assets,
-        trigger_type=trigger_type,
-        agent_run_id=run_id,
+    user_message = (
+        f"Analyse the following assets and generate trading signals where appropriate: "
+        f"{', '.join(assets)}. "
+        f"Today is {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}. "
+        f"Your agent_run_id for place_signal calls is: {run_id}"
     )
 
-    logger.info(f"Starting trading agent run {run_id} for {assets}")
+    initial_state: LiveAgentState = {
+        "messages": [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=user_message),
+        ],
+        "agent_run_id": run_id,
+        "assets": assets,
+    }
 
+    logger.info(f"Starting live trading agent run {run_id} for {assets}")
     try:
-        # Execute the graph
         final_state = await trading_agent.ainvoke(initial_state)
 
-        # Convert back to our state model if needed
-        if isinstance(final_state, dict):
-            final_state = TradingAgentState(**final_state)
-
-        logger.info(
-            f"Agent run {run_id} completed. "
-            f"Signals: {len(final_state.trading_signals)}, "
-            f"Errors: {len(final_state.errors)}"
+        signals_placed = sum(
+            1 for m in final_state["messages"]
+            if isinstance(m, ToolMessage)
+            and '"status": "saved"' in str(m.content)
         )
-        return final_state
+
+        supabase.table("agent_runs").update({
+            "status": "completed",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "logs": [
+                {"role": m.type, "content": str(m.content)[:500]}
+                for m in final_state["messages"]
+            ],
+        }).eq("id", run_id).execute()
+
+        logger.info(f"Agent run {run_id} completed. Signals placed: {signals_placed}")
+        return {"run_id": run_id, "status": "completed", "signals_placed": signals_placed}
 
     except Exception as e:
         logger.error(f"Agent run {run_id} failed: {e}")
-        # Mark run as failed
-        if run_id:
-            supabase.table("agent_runs").update({
-                "status": "failed",
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "error_message": str(e),
-            }).eq("id", run_id).execute()
+        supabase.table("agent_runs").update({
+            "status": "failed",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", run_id).execute()
         raise
+

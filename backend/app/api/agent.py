@@ -20,14 +20,11 @@ async def trigger_agent_run(
 ):
     """Trigger a new agent run. Returns immediately with run ID."""
     try:
-        # Run in background task
-        state = await run_trading_agent(trigger_type=trigger_type, assets=assets)
+        result = await run_trading_agent(trigger_type=trigger_type, assets=assets)
         return {
-            "run_id": state.agent_run_id,
-            "status": "completed",
-            "signals_generated": len(state.trading_signals),
-            "errors": state.errors,
-            "signals": [s.model_dump() for s in state.trading_signals],
+            "run_id": result.get("run_id"),
+            "status": result.get("status"),
+            "signals_placed": result.get("signals_placed", 0),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

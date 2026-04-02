@@ -54,19 +54,6 @@ async def trigger_agent_backtest(
     run_id = str(uuid.uuid4())
     supabase = get_supabase()
 
-    # Create run record immediately for status polling
-    supabase.table("backtest_runs").insert({
-        "id": run_id,
-        "name": f"Agent Backtest {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}",
-        "assets": request.assets,
-        "timeframe": request.timeframe,
-        "start_date": request.start_date,
-        "end_date": request.end_date,
-        "initial_capital": request.initial_capital,
-        "status": "running",
-        "config": request.model_dump(),
-    }).execute()
-
     async def _run_in_background():
         try:
             await run_backtest_agent(request.model_dump(), run_id=run_id)
@@ -85,30 +72,9 @@ async def trigger_agent_backtest(
 async def trigger_agent_backtest_sync(request: BacktestAgentRequest):
     """Synchronous agent backtest — waits for completion (use for smaller date ranges)."""
     run_id = str(uuid.uuid4())
-    supabase = get_supabase()
-    supabase.table("backtest_runs").insert({
-        "id": run_id,
-        "name": f"Agent Backtest {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}",
-        "assets": request.assets,
-        "timeframe": request.timeframe,
-        "start_date": request.start_date,
-        "end_date": request.end_date,
-        "initial_capital": request.initial_capital,
-        "status": "running",
-        "config": request.model_dump(),
-    }).execute()
     try:
-        final_state = await run_backtest_agent(request.model_dump(), run_id=run_id)
-        return {
-            "run_id": run_id,
-            "status": "completed",
-            "best_strategy": final_state.best_strategy.model_dump() if final_state.best_strategy else None,
-            "best_result": final_state.best_result.model_dump(exclude={"equity_curve", "trades"}) if final_state.best_result else None,
-            "ranking_analysis": final_state.ranking_analysis,
-            "recommendations": final_state.recommendations,
-            "strategy_count": len(final_state.strategy_results),
-            "logs": final_state.logs[-20:],
-        }
+        result = await run_backtest_agent(request.model_dump(), run_id=run_id)
+        return result
     except Exception as e:
         raise HTTPException(500, str(e))
 
