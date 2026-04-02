@@ -54,3 +54,9 @@ class BacktestAgentState(BaseModel):
     logs: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     completed: bool = False
+
+    # Optimization loop
+    iteration: int = 0
+    max_iterations: int = 3
+    optimization_reasoning: str = ""
+    should_continue_optimization: bool = False

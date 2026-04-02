@@ -96,6 +96,7 @@ async def load_data_node(state: BacktestAgentState) -> BacktestAgentState:
             .gte("timestamp", start_date)
             .lte("timestamp", end_date)
             .order("timestamp")
+            .limit(50000)  # PostgREST default caps at 1000 without this
             .execute()
         )
         rows = resp.data or []
@@ -240,37 +241,49 @@ def _simulate_strategy(
     sell_signal = pd.Series(False, index=df.index)
 
     try:
-        if "ema_crossover" in name:
-            fast_p = strategy.entry_rules["ema_fast"]
-            slow_p = strategy.entry_rules["ema_slow"]
+        if "ema_crossover" in name or "ema_cross" in name:
+            fast_p = strategy.entry_rules.get("ema_fast", 10)
+            slow_p = strategy.entry_rules.get("ema_slow", 20)
             fast = _ema(close, fast_p)
             slow = _ema(close, slow_p)
             buy_signal = (fast > slow) & (fast.shift(1) <= slow.shift(1))
             sell_signal = (fast < slow) & (fast.shift(1) >= slow.shift(1))
 
-        elif name == "rsi_mean_reversion":
-            rsi = _rsi(close, strategy.entry_rules["period"])
-            buy_threshold = strategy.entry_rules["buy_threshold"]
-            sell_threshold = strategy.exit_rules["sell_threshold"]
+        elif "rsi_mean_reversion" in name:
+            period = strategy.entry_rules.get("period", 14)
+            buy_threshold = strategy.entry_rules.get("buy_threshold", 35)
+            sell_threshold = strategy.exit_rules.get("sell_threshold", 65)
+            rsi = _rsi(close, period)
             buy_signal = (rsi < buy_threshold) & (rsi.shift(1) >= buy_threshold)
             sell_signal = (rsi > sell_threshold) & (rsi.shift(1) <= sell_threshold)
 
-        elif name == "macd_momentum":
-            macd_line, signal_line = _macd(close)
+        elif "macd" in name:
+            fast_p = strategy.entry_rules.get("ema_fast", 12)
+            slow_p = strategy.entry_rules.get("ema_slow", 26)
+            sig_p  = strategy.entry_rules.get("signal_period", 9)
+            ema_f = _ema(close, fast_p)
+            ema_s = _ema(close, slow_p)
+            macd_line = ema_f - ema_s
+            signal_line = _ema(macd_line, sig_p)
             buy_signal = (macd_line > signal_line) & (macd_line.shift(1) <= signal_line.shift(1))
             sell_signal = (macd_line < signal_line) & (macd_line.shift(1) >= signal_line.shift(1))
 
-        elif name == "bollinger_breakout":
-            upper, lower = _bollinger(close)
+        elif "bollinger" in name:
+            period   = strategy.entry_rules.get("period", 20)
+            std_mult = strategy.entry_rules.get("std", 2.0)
+            upper, lower = _bollinger(close, period=period, std=std_mult)
             buy_signal = close > upper
             sell_signal = close < lower
 
-        elif name == "rsi_trend_filter":
+        elif "rsi_trend" in name:
+            rsi_buy    = strategy.entry_rules.get("rsi_buy", 40)
+            rsi_sell   = strategy.exit_rules.get("rsi_sell", 60)
+            sma_period = strategy.entry_rules.get("sma_period", 50)
             rsi = _rsi(close, 14)
-            sma50 = close.rolling(50).mean()
-            sma50_rising = sma50 > sma50.shift(5)
-            buy_signal = (rsi < strategy.entry_rules["rsi_buy"]) & sma50_rising
-            sell_signal = rsi > strategy.exit_rules["rsi_sell"]
+            sma = close.rolling(sma_period).mean()
+            sma_rising = sma > sma.shift(5)
+            buy_signal = (rsi < rsi_buy) & sma_rising
+            sell_signal = rsi > rsi_sell
 
     except Exception:
         pass
@@ -389,7 +402,8 @@ def _simulate_strategy(
 
 async def simulate_strategies_node(state: BacktestAgentState) -> BacktestAgentState:
     state.logs.append(f"Simulating {len(state.strategies)} strategies × {len(state.historical_data)} assets...")
-    results: list[StrategyResult] = []
+    # Accumulate across optimization rounds — do not replace previous results
+    results: list[StrategyResult] = list(state.strategy_results)
 
     for asset, rows in state.historical_data.items():
         df = pd.DataFrame(rows)
@@ -489,8 +503,109 @@ Respond as JSON:
             state.ranking_analysis = f"Best by Sharpe ratio: {best.strategy_name} on {best.asset}"
 
     state.logs.append(f"  Best: {state.best_strategy.name if state.best_strategy else 'N/A'}")
-    state.completed = True
     return state
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Node: LLM proposes parameter variants and decides whether to keep optimizing
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def optimize_strategy_node(state: BacktestAgentState) -> BacktestAgentState:
+    """Agent analyzes results and proposes concrete parameter variants to test next round."""
+    state.iteration += 1
+    state.logs.append(f"Optimization round {state.iteration}/{state.max_iterations}: agent proposing variants...")
+
+    if not state.best_result or not state.best_strategy:
+        state.should_continue_optimization = False
+        return state
+
+    results_summary = sorted(
+        [r.model_dump(exclude={"equity_curve", "trades"}) for r in state.strategy_results],
+        key=lambda x: x.get("sharpe_ratio", 0),
+        reverse=True,
+    )
+
+    prompt = f"""You are a quantitative strategy optimizer running iteration {state.iteration} of {state.max_iterations}.
+
+Assets: {list(state.historical_data.keys())}
+Config: {json.dumps(state.config)}
+
+All results tested so far (best first by Sharpe):
+{json.dumps(results_summary[:15], indent=2)}
+
+Best strategy so far: {state.best_strategy.model_dump()}
+Best metrics: return={state.best_result.total_return_pct:.1f}%, sharpe={state.best_result.sharpe_ratio:.2f}, win_rate={state.best_result.win_rate:.1f}%, max_dd={state.best_result.max_drawdown_pct:.1f}%
+
+Propose 2-4 NEW untested parameter variants that may outperform the current best.
+Focus on the best-performing strategy family. Use SPECIFIC numbers, not vague ideas.
+Set should_continue=false if: Sharpe > 2.5, you've exhausted meaningful ideas, or diminishing returns are clear.
+
+Available strategy types and their parameter schemas:
+- ema_crossover variants: entry_rules={{"ema_fast": N, "ema_slow": M}}, exit_rules={{"ema_fast": N, "ema_slow": M}}
+- rsi_mean_reversion variants: entry_rules={{"period": N, "buy_threshold": X}}, exit_rules={{"sell_threshold": Y}}
+- macd variants: entry_rules={{"ema_fast": N, "ema_slow": M, "signal_period": P}}, exit_rules={{}}
+- bollinger variants: entry_rules={{"period": N, "std": X}}, exit_rules={{}}
+- rsi_trend variants: entry_rules={{"rsi_buy": X, "sma_period": N}}, exit_rules={{"rsi_sell": Y}}
+
+Respond ONLY as JSON:
+{{
+  "should_continue": true,
+  "reasoning": "brief explanation of what you're testing and why",
+  "variants": [
+    {{
+      "name": "ema_crossover_opt_{state.iteration}_1",
+      "description": "EMA 8/21 — tighter than 10/20 to catch faster moves",
+      "entry_rules": {{"ema_fast": 8, "ema_slow": 21}},
+      "exit_rules": {{"ema_fast": 8, "ema_slow": 21}}
+    }}
+  ]
+}}"""
+
+    try:
+        resp = await workhorse_llm.ainvoke(prompt)
+        content = resp.content if hasattr(resp, "content") else str(resp)
+        import re
+        match = re.search(r'\{{.*\}}', content, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group())
+            state.should_continue_optimization = parsed.get("should_continue", False)
+            state.optimization_reasoning = parsed.get("reasoning", "")
+            new_strategies = []
+            for v in parsed.get("variants", []):
+                # Skip already-tested names
+                tested_names = {r.strategy_name for r in state.strategy_results}
+                if v.get("name") in tested_names:
+                    continue
+                try:
+                    new_strategies.append(StrategySpec(
+                        name=v["name"],
+                        description=v.get("description", ""),
+                        entry_rules=v.get("entry_rules", {}),
+                        exit_rules=v.get("exit_rules", {}),
+                    ))
+                except Exception:
+                    pass
+            state.strategies = new_strategies
+            state.logs.append(
+                f"  Optimizer: {len(new_strategies)} variants queued. "
+                f"Continue={state.should_continue_optimization}. {state.optimization_reasoning[:120]}"
+            )
+            if not new_strategies:
+                state.should_continue_optimization = False
+    except Exception as e:
+        state.errors.append(f"Optimization error: {e}")
+        state.should_continue_optimization = False
+
+    return state
+
+
+def route_after_ranking(state: BacktestAgentState) -> str:
+    """Always do at least one optimization round; then follow LLM signal or iteration cap."""
+    if state.iteration == 0:
+        return "optimize"  # First pass: always try to improve
+    if state.iteration >= state.max_iterations or not state.should_continue_optimization:
+        return "persist"
+    return "optimize"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -520,6 +635,9 @@ async def persist_backtest_node(state: BacktestAgentState) -> BacktestAgentState
                 "ranking_analysis": state.ranking_analysis,
                 "recommendations": state.recommendations,
                 "strategy_selection_reasoning": state.strategy_selection_reasoning,
+                "optimization_iterations": state.iteration,
+                "optimization_reasoning": state.optimization_reasoning,
+                "total_variants_tested": len(state.strategy_results),
             },
             "equity_curve": best_equity,
             "trades": best_trades,
@@ -545,6 +663,7 @@ def build_backtest_graph() -> StateGraph:
     graph.add_node("select_strategies", select_strategies_node)
     graph.add_node("simulate_strategies", simulate_strategies_node)
     graph.add_node("rank_strategies", rank_strategies_node)
+    graph.add_node("optimize_strategy", optimize_strategy_node)
     graph.add_node("persist_results", persist_backtest_node)
 
     graph.add_edge(START, "load_data")
@@ -552,7 +671,11 @@ def build_backtest_graph() -> StateGraph:
     graph.add_edge("compute_indicators", "select_strategies")
     graph.add_edge("select_strategies", "simulate_strategies")
     graph.add_edge("simulate_strategies", "rank_strategies")
-    graph.add_edge("rank_strategies", "persist_results")
+    graph.add_conditional_edges("rank_strategies", route_after_ranking, {
+        "optimize": "optimize_strategy",
+        "persist": "persist_results",
+    })
+    graph.add_edge("optimize_strategy", "simulate_strategies")
     graph.add_edge("persist_results", END)
 
     return graph.compile()
