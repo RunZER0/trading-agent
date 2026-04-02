@@ -1,4 +1,4 @@
-"""Bulk historical data loader — fetches from Alpha Vantage with full output,
+"""Bulk historical data loader — fetches from yfinance (free, no key required),
 stores/upserts into Supabase historical_data table, and reports progress."""
 
 from __future__ import annotations
@@ -14,11 +14,6 @@ import yfinance as yf
 from app.config import settings
 from app.dependencies import get_supabase
 from app.models.schemas import MarketType, OHLCVBar
-from app.services.market_data import (
-    fetch_crypto_daily,
-    fetch_forex_daily,
-    _rate_limited_get,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -31,69 +26,57 @@ FOREX_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD"]
 # Full-output fetchers (for maximum historical depth)
 # -----------------------------------------------
 
-async def fetch_crypto_full(symbol: str, market: str = "USD") -> list[OHLCVBar]:
-    """Fetch full daily OHLCV history for crypto (outputsize=full = ~20 years)."""
-    data = await _rate_limited_get({
-        "function": "DIGITAL_CURRENCY_DAILY",
-        "symbol": symbol,
-        "market": market,
-    })
-    ts_key = "Time Series (Digital Currency Daily)"
-    series = data.get(ts_key, {})
-    if not series:
-        logger.warning(f"No data returned for crypto {symbol}. Raw keys: {list(data.keys())[:5]}")
-        return []
-    bars: list[OHLCVBar] = []
-    for date_str, values in sorted(series.items()):
-        try:
-            bars.append(OHLCVBar(
-                timestamp=date_str,
-                open=float(values.get(f"1a. open ({market})", values.get("1. open", 0))),
-                high=float(values.get(f"2a. high ({market})", values.get("2. high", 0))),
-                low=float(values.get(f"3a. low ({market})", values.get("3. low", 0))),
-                close=float(values.get(f"4a. close ({market})", values.get("4. close", 0))),
-                volume=float(values.get("5. volume", 0)),
-            ))
-        except (ValueError, TypeError):
-            continue
-    return bars
-
-
-async def fetch_forex_full(from_symbol: str, to_symbol: str) -> list[OHLCVBar]:
-    """Fetch full daily OHLCV history for a forex pair (outputsize=full)."""
-    data = await _rate_limited_get({
-        "function": "FX_DAILY",
-        "from_symbol": from_symbol,
-        "to_symbol": to_symbol,
-        "outputsize": "full",
-    })
-    ts_key = "Time Series FX (Daily)"
-    series = data.get(ts_key, {})
-    if not series:
-        logger.warning(f"No data returned for forex {from_symbol}/{to_symbol}. Raw keys: {list(data.keys())[:5]}")
-        return []
-    bars: list[OHLCVBar] = []
-    for date_str, values in sorted(series.items()):
-        try:
-            bars.append(OHLCVBar(
-                timestamp=date_str,
-                open=float(values.get("1. open", 0)),
-                high=float(values.get("2. high", 0)),
-                low=float(values.get("3. low", 0)),
-                close=float(values.get("4. close", 0)),
-                volume=0.0,
-            ))
-        except (ValueError, TypeError):
-            continue
-    return bars
-
-
 # yfinance symbol map (free, no API key needed)
 _YF_CRYPTO = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "BNB": "BNB-USD", "ADA": "ADA-USD"}
 _YF_FOREX  = {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X",
               "AUD/USD": "AUDUSD=X", "USD/CAD": "USDCAD=X"}
 # Map our timeframe labels to yfinance interval strings
 _YF_INTERVAL = {"1h": "1h", "4h": "1h", "30m": "30m", "15m": "15m"}
+
+
+def _yf_download_daily(yf_symbol: str) -> pd.DataFrame:
+    """Download max daily history via yfinance."""
+    df = yf.download(yf_symbol, period="max", interval="1d", progress=False, auto_adjust=True)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+
+async def fetch_yfinance_daily(symbol: str) -> list[OHLCVBar]:
+    """Fetch full daily OHLCV history for any asset via yfinance (free, no key)."""
+    yf_symbol = _YF_CRYPTO.get(symbol) or _YF_FOREX.get(symbol)
+    if not yf_symbol:
+        logger.warning(f"No yfinance symbol mapping for {symbol}")
+        return []
+    loop = asyncio.get_event_loop()
+    df = await loop.run_in_executor(None, _yf_download_daily, yf_symbol)
+    if df is None or df.empty:
+        logger.warning(f"yfinance returned empty daily data for {symbol} ({yf_symbol})")
+        return []
+    bars: list[OHLCVBar] = []
+    for ts, row in df.iterrows():
+        try:
+            bars.append(OHLCVBar(
+                timestamp=ts.strftime("%Y-%m-%d"),
+                open=float(row["Open"]),
+                high=float(row["High"]),
+                low=float(row["Low"]),
+                close=float(row["Close"]),
+                volume=float(row.get("Volume", 0)),
+            ))
+        except (ValueError, TypeError, KeyError):
+            continue
+    return bars
+
+
+async def fetch_crypto_full(symbol: str, market: str = "USD") -> list[OHLCVBar]:
+    """Alias — now uses yfinance instead of Alpha Vantage."""
+    return await fetch_yfinance_daily(symbol)
+
+
+async def fetch_forex_full(from_symbol: str, to_symbol: str) -> list[OHLCVBar]:
+    """Alias — now uses yfinance instead of Alpha Vantage."""
+    return await fetch_yfinance_daily(f"{from_symbol}/{to_symbol}")
 
 
 def _yf_download(yf_symbol: str, interval: str) -> pd.DataFrame:
@@ -246,17 +229,13 @@ async def load_all_historical(
     timeframes: list[str] | None = None,
     progress_cb: Any = None,
 ) -> dict[str, Any]:
-    """Fetch full historical data for all tracked assets and store in Supabase.
+    Bulk loader: now uses yfinance for ALL timeframes (free, no key required).
 
-    Args:
         crypto_assets: list of crypto symbols (defaults to settings)
         forex_pairs: list of forex pairs like "EUR/USD" (defaults to settings)
         timeframes: list of timeframes to load, e.g. ["1d", "1h", "4h"]
-                   Defaults to ["1d"] only. Note: intraday uses 25 req/day limit.
+                   Defaults to ["1d"] only.
         progress_cb: async callable(dict) for progress updates
-
-    Returns:
-        Summary dict with counts per asset.
     """
     crypto_assets = crypto_assets or settings.crypto_symbols
     forex_pairs = forex_pairs or settings.forex_pairs
@@ -278,7 +257,7 @@ async def load_all_historical(
             try:
                 await _report(symbol, f"fetching {tf}")
                 if is_daily:
-                    bars = await fetch_crypto_full(symbol)
+                    bars = await fetch_yfinance_daily(symbol)
                 else:
                     bars = await fetch_yfinance_intraday(symbol, tf)
                 count = _upsert_bars(symbol, MarketType.CRYPTO, bars, timeframe=tf)
@@ -299,7 +278,7 @@ async def load_all_historical(
             try:
                 await _report(pair, f"fetching {tf}")
                 if is_daily:
-                    bars = await fetch_forex_full(from_sym, to_sym)
+                    bars = await fetch_yfinance_daily(pair)
                 else:
                     bars = await fetch_yfinance_intraday(pair, tf)
                 count = _upsert_bars(pair, MarketType.FOREX, bars, timeframe=tf)
@@ -334,14 +313,17 @@ def _resample_to_4h(bars: list[OHLCVBar]) -> list[OHLCVBar]:
 
 
 async def load_single_asset(asset: str, market_type: MarketType) -> dict[str, Any]:
-    """Fetch and store historical data for a single asset."""
+    """Fetch and store historical data for a single asset via yfinance."""
     try:
-        if market_type == MarketType.CRYPTO:
-            bars = await fetch_crypto_full(asset)
-        else:
-            parts = asset.split("/")
-            bars = await fetch_forex_full(parts[0], parts[1])
-        count = _upsert_bars(asset, market_type, bars)
+        bars_1d = await fetch_yfinance_daily(asset)
+        count = _upsert_bars(asset, market_type, bars_1d, timeframe="1d")
+        # Also refresh intraday
+        for tf in ["1h", "4h", "15m"]:
+            try:
+                intraday = await fetch_yfinance_intraday(asset, tf)
+                count += _upsert_bars(asset, market_type, intraday, timeframe=tf)
+            except Exception:
+                pass
         return {"asset": asset, "bars_loaded": count, "status": "ok"}
     except Exception as e:
         logger.error(f"Failed to load {asset}: {e}")

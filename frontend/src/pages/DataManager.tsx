@@ -130,8 +130,7 @@ export default function DataManager() {
 
       {loadRunning && (
         <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 text-sm text-blue-400">
-          Fetching historical data from Alpha Vantage for all assets (this takes several minutes due to API rate limits).
-          The page will auto-refresh when complete.
+          Fetching historical data from yfinance for all assets. This may take a minute.
         </div>
       )}
 

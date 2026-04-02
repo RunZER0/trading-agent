@@ -1,6 +1,6 @@
 """Comprehensive backtesting framework.
 
-Pulls historical data from Supabase (pre-loaded from Alpha Vantage),
+Pulls historical data from Supabase (pre-loaded via yfinance),
 replays it through the agent's analysis pipeline, and produces
 detailed performance metrics.
 """
@@ -28,7 +28,6 @@ from app.models.schemas import (
     SignalGenerationOutput,
 )
 from app.services.llm import decision_llm, llm_structured_output, workhorse_llm
-from app.services.market_data import fetch_and_store_historical
 from app.services.technical_analysis import (
     bars_to_dataframe,
     compute_all_indicators,
@@ -49,10 +48,7 @@ LOOKBACK_WINDOW = 100
 async def ensure_historical_data(
     asset: str, market_type: MarketType, timeframe: str = "1d"
 ) -> int:
-    """Ensure historical data exists in Supabase. Fetch from Alpha Vantage if missing.
-
-    Returns number of rows available.
-    """
+    """Return the number of historical bars available in Supabase for this asset."""
     supabase = get_supabase()
     count_resp = (
         supabase.table("historical_data")
@@ -61,15 +57,7 @@ async def ensure_historical_data(
         .eq("timeframe", timeframe)
         .execute()
     )
-    existing = count_resp.count or 0
-
-    if existing < 50:
-        logger.info(f"Insufficient historical data for {asset}. Fetching from provider...")
-        av_timeframe = "daily" if timeframe == "1d" else "60min"
-        inserted = await fetch_and_store_historical(asset, market_type, av_timeframe)
-        return inserted
-
-    return existing
+    return count_resp.count or 0
 
 
 def load_historical_from_supabase(
