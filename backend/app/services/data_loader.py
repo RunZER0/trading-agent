@@ -229,7 +229,7 @@ async def load_all_historical(
     timeframes: list[str] | None = None,
     progress_cb: Any = None,
 ) -> dict[str, Any]:
-    Bulk loader: now uses yfinance for ALL timeframes (free, no key required).
+    """Bulk loader: now uses yfinance for ALL timeframes (free, no key required).
 
         crypto_assets: list of crypto symbols (defaults to settings)
         forex_pairs: list of forex pairs like "EUR/USD" (defaults to settings)
